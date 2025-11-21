@@ -375,35 +375,21 @@ def render_entity(base_pkg: str, name: str, meta: Dict, relations: List[Dict], t
 
     # ------------------ relations ------------------
     for r in relations:
-        # ONE TO MANY on inverse side
+        # ONE TO MANY auf inverse Seite
         if r["type"] == "OneToMany" and r["one"] == name:
             many = r["many"]
             field = many[0].lower() + many[1:] + "s"
-
+            mapped_by = to_camel(name)
             relation_fields.append(textwrap.dedent(f"""
                 @JsonIgnore
-                @OneToMany(mappedBy = "{name[0].lower()+name[1:]}")
+                @OneToMany(mappedBy = "{mapped_by}")
                 private Set<{many}> {field} = new HashSet<>();
-            """))
-
-            relation_methods.append(textwrap.dedent(f"""
-                public Set<{many}> get{field.capitalize()}() {{ return {field}; }}
-                public void set{field.capitalize()}(Set<{many}> s) {{ this.{field} = s; }}
-
-                public void add{many}({many} e) {{
-                    e.set{name}(this);
-                }}
-
-                public void remove{many}({many} e) {{
-                    e.set{name}(null);
-                }}
             """))
 
         # MANY TO ONE owning
         if r["type"] == "OneToMany" and r["many"] == name:
             one = r["one"]
-            camel = one[0].lower() + one[1:]
-
+            camel = to_camel(one)
             relation_fields.append(textwrap.dedent(f"""
                 @JsonIgnore
                 @ManyToOne
@@ -411,29 +397,12 @@ def render_entity(base_pkg: str, name: str, meta: Dict, relations: List[Dict], t
                 private {one} {camel};
             """))
 
-            relation_methods.append(textwrap.dedent(f"""
-                public {one} get{one}() {{ return {camel}; }}
-
-                public void set{one}({one} g) {{
-                    if (this.{camel} != null) {{
-                        this.{camel}.get{name}s().remove(this);
-                    }}
-                    this.{camel} = g;
-                    if (g != null) {{
-                        g.get{name}s().add(this);
-                    }}
-                }}
-            """))
-
         # MANY TO MANY
         if r["type"] == "ManyToMany":
             a, b = r["a"], r["b"]
-
             if a == name:
-                # owning side
                 other = b
-                field = other[0].lower() + other[1:] + "s"
-
+                field = to_camel(other) + "s"
                 relation_fields.append(textwrap.dedent(f"""
                     @JsonIgnore
                     @ManyToMany
@@ -444,36 +413,14 @@ def render_entity(base_pkg: str, name: str, meta: Dict, relations: List[Dict], t
                     )
                     private Set<{other}> {field} = new HashSet<>();
                 """))
-
-                relation_methods.append(textwrap.dedent(f"""
-                    public Set<{other}> get{field.capitalize()}() {{ return {field}; }}
-                    public void set{field.capitalize()}(Set<{other}> s) {{ this.{field} = s; }}
-
-                    public void add{other}({other} e) {{
-                        e.get{name}s().add(this);
-                        {field}.add(e);
-                    }}
-
-                    public void remove{other}({other} e) {{
-                        e.get{name}s().remove(this);
-                        {field}.remove(e);
-                    }}
-                """))
-
             elif b == name:
-                # inverse side
                 other = a
-                field = other[0].lower() + other[1:] + "s"
-
+                field = to_camel(other) + "s"
+                mapped_by = to_camel(name) + "s"
                 relation_fields.append(textwrap.dedent(f"""
                     @JsonIgnore
-                    @ManyToMany(mappedBy = "{other[0].lower()+other[1:]}s")
+                    @ManyToMany(mappedBy = "{mapped_by}")
                     private Set<{other}> {field} = new HashSet<>();
-                """))
-
-                relation_methods.append(textwrap.dedent(f"""
-                    public Set<{other}> get{field.capitalize()}() {{ return {field}; }}
-                    public void set{field.capitalize()}(Set<{other}> s) {{ this.{field} = s; }}
                 """))
 
     final = tpl.format(
