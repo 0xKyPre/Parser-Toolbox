@@ -26,6 +26,8 @@ import re
 import sys
 import textwrap
 from typing import Dict, List
+import random
+
 
 # ------------------ Utility functions ------------------
 
@@ -436,6 +438,59 @@ def render_entity(base_pkg: str, name: str, meta: Dict, relations: List[Dict], t
 
 # ------------------ Main generator ------------------
 
+def generate_import_sql(entities, relations):
+    """
+    Generiert INSERT Statements für alle Entities mit festen IDs (1,2,3...),
+    inkl. Foreign Keys und ManyToMany Tabellen.
+    """
+    sql_lines = []
+    id_counters = {ename: 1 for ename in entities}
+
+    fk_map = {}
+    for r in relations:
+        if r['type'] == 'OneToMany':
+            fk_map[r['many']] = r['one']
+
+    for ename, meta in entities.items():
+        for i in range(1, 2):
+            columns = []
+            values = []
+
+            for attr, typ in meta["attrs"]:
+                if attr.lower() == "id":
+                    columns.append("id")
+                    values.append(str(id_counters[ename]))
+                    continue
+
+                if ename in fk_map and attr.lower() == f"{fk_map[ename].lower()}_id":
+                    columns.append(attr)
+                    values.append("1")
+                    continue
+
+                columns.append(attr)
+                if typ.lower() in ["string", "varchar", "text"]:
+                    values.append(f"'{ename}_{i}'")
+                elif typ.lower() in ["int", "integer"]:
+                    values.append(str(random.randint(1, 100)))
+                elif typ.lower() in ["double", "float"]:
+                    values.append(str(round(random.uniform(1.0, 100.0), 2)))
+                else:
+                    values.append("NULL")
+
+            sql_lines.append(f"INSERT INTO {ename.lower()} ({', '.join(columns)}) VALUES ({', '.join(values)});")
+            id_counters[ename] += 1
+
+    for r in relations:
+        if r['type'] == 'ManyToMany':
+            a, b = r['a'].lower(), r['b'].lower()
+            join_table = f"{a}_{b}"
+            sql_lines.append(f"INSERT INTO {join_table} ({a}_id, {b}_id) VALUES (1, 1);")
+
+    return "\n".join(sql_lines)
+
+
+
+
 def load_template(tpl_dir: Path, name: str, default: str) -> str:
     f = tpl_dir / name
     if not f.exists():
@@ -491,6 +546,8 @@ def generate(project_root: Path, base_pkg: str, entities: Dict[str, Dict], relat
         (resources_path / f"{ename}Resource.java").write_text(res)
 
 
+    rel_objs = [decide_relation(r) for r in relations_raw]
+
     # pom + app + readme
     group = base_pkg
     artifact = project_root.name
@@ -502,6 +559,7 @@ def generate(project_root: Path, base_pkg: str, entities: Dict[str, Dict], relat
         )
     )
     (project_root / 'src' / 'main' / 'resources' / 'application.properties').write_text(app_tpl)
+    (project_root / 'src' / 'main' / 'resources' / 'import.sql').write_text(generate_import_sql(entities=entities, relations=rel_objs))
     (project_root / 'README.md').write_text(readme_tpl)
 
     print(f"Project generated at: {project_root}")
