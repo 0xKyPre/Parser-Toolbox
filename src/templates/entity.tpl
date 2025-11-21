@@ -1,16 +1,23 @@
-package {pkg}.entities;
+package {package}.entities;
 
 import jakarta.persistence.*;
-{extra_imports}
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import java.util.Set;
+import java.util.HashSet;
 
 @Entity
-@Table(name = "{table_name}")
-public class {class_name} {{
+public class {ClassName} {{
+
+    @Id
+    @GeneratedValue
+    private Long id;
 
 {fields}
 
-{relations}
+{relationFields}
 
-{getters_setters}
+{getters}
+
+{relationMethods}
 
 }}

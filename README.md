@@ -8,4 +8,9 @@ Some parser and converter
 python parser.py {test.puml} {./output_dir}  {base.package}
 ```
 
+```
+python parser.py {test.puml} {./name_of_project}  at.ac.htlleonding.wmctest5
+```
+
+
 ## using exec

@@ -3,9 +3,10 @@ package {pkg}.repositories;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
-import jakarta.persistence.TypedQuery;
+import jakarta.transaction.Transactional;
 import {pkg}.entities.{entity};
-import java.util.Collection;
+
+import java.util.List;
 
 @ApplicationScoped
 public class {entity}Repository {{
@@ -13,27 +14,25 @@ public class {entity}Repository {{
     @Inject
     EntityManager em;
 
-    public {entity} find(Long id) {{
+    @Transactional
+    public List<{entity}> findAll() {{
+        return em.createQuery("select e from {entity} e", {entity}.class).getResultList();
+    }}
+
+    @Transactional
+    public {entity} findById(Long id) {{
         return em.find({entity}.class, id);
     }}
 
-    public Collection<{entity}> listAll() {{
-        TypedQuery<{entity}> q = em.createQuery("from " + {entity}.class.getSimpleName(), {entity}.class);
-        return q.getResultList();
-    }}
-
-    public {entity} persist({entity} e) {{
-        em.persist(e);
-        return e;
-    }}
-
-    public {entity} update({entity} e) {{
+    @Transactional
+    public {entity} save({entity} e) {{
         return em.merge(e);
     }}
 
-    public void delete(Long id) {{
-        {entity} e = em.find({entity}.class, id);
-        if (e != null) em.remove(e);
+    @Transactional
+    public void deleteById(Long id) {{
+        em.createQuery("delete from {entity} where id = :id")
+            .setParameter("id", id)
+            .executeUpdate();
     }}
-
 }}

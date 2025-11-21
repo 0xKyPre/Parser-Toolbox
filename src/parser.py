@@ -336,176 +336,156 @@ def decide_relation(rel: Dict) -> Dict:
 
 # ------------------ Renderer ------------------
 
-def render_entity(pkg: str, name: str, meta: Dict, relations: List[Dict], tpl: str) -> str:
-    attrs = meta.get('attrs', [])
+def render_entity(base_pkg: str, name: str, meta: Dict, relations: List[Dict], tpl: str) -> str:
+    attrs = meta["attrs"]
+    
     fields = []
     getters = []
-    rel_snips = []
-    imports = set()
+    relation_fields = []
+    relation_methods = []
 
-    # find id
-    id_attr = None
-    for a in attrs:
-        if a[0].lower() == 'id':
-            id_attr = a
-            break
-    if id_attr is None and attrs:
-        id_attr = attrs[0]
-
-    # fields for attrs
+    # ------------------ normal fields ------------------
     for aname, atype in attrs:
-        fname = aname.strip()
-        if not fname:
+        if aname.lower() == "id":
+            fields.append("    @Id\n    @GeneratedValue\n    private Long id;")
+            getters.append(textwrap.dedent("""
+                public Long getId() { return id; }
+                public void setId(Long id) { this.id = id; }
+            """))
             continue
-        jtype = atype.strip()
-        # simple mapping
+
         jmap = {
-            'long': 'Long', 'int': 'Integer', 'integer': 'Integer', 'string': 'String', 'decimal': 'java.math.BigDecimal',
-            'double': 'Double', 'float': 'Float', 'boolean': 'Boolean'
+            "string": "String",
+            "int": "Integer",
+            "integer": "Integer",
+            "long": "Long",
+            "double": "Double",
+            "float": "Float",
+            "boolean": "Boolean",
         }
-        jtype = jmap.get(jtype.lower(), jtype)
-        if id_attr and fname == id_attr[0]:
-            fields.append('    @Id')
-            fields.append('    @GeneratedValue()')
-            fields.append(f'    private Long {fname};')
-            getters.append(textwrap.dedent(f"""
-                public Long getId() {{
-                    return {fname};
-                }}
-                
-                public void setId(Long id) {{
-                    this.{fname} = id;
-                }}
-                """))
-        else:
-            fields.append(f'    private {jtype} {fname};')
-            # getter/setter
-            cap = fname[0].upper() + fname[1:]
-            getters.append(textwrap.dedent(f"""
-                public {jtype} get{cap}() {{
-                    return {fname};
-                }}
+        jtype = jmap.get(atype.lower(), atype)
 
-                public void set{cap}({jtype} {fname}) {{
-                    this.{fname} = {fname};
-                }}
-                """))
+        fields.append(f"    private {jtype} {aname};")
 
-    # handle relations
+        cap = aname[0].upper() + aname[1:]
+        getters.append(textwrap.dedent(f"""
+            public {jtype} get{cap}() {{ return {aname}; }}
+            public void set{cap}({jtype} {aname}) {{ this.{aname} = {aname}; }}
+        """))
+
+    # ------------------ relations ------------------
     for r in relations:
-        if r['type'] == 'OneToMany' and r['one'] == name:
-            many = r['many']
-            field = to_camel(many) + 's'
-            rel_snips.append(f'    @OneToMany(mappedBy = "{to_camel(name)}")')
-            rel_snips.append(f'    private Collection<{many}> {field};')
-            # getter/setter
-            getters.append(textwrap.dedent(f"""
-                public Collection<{many}> get{field[0].upper()+field[1:]}() {{
-                    return {field};
+        # ONE TO MANY on inverse side
+        if r["type"] == "OneToMany" and r["one"] == name:
+            many = r["many"]
+            field = many[0].lower() + many[1:] + "s"
+
+            relation_fields.append(textwrap.dedent(f"""
+                @JsonIgnore
+                @OneToMany(mappedBy = "{name[0].lower()+name[1:]}")
+                private Set<{many}> {field} = new HashSet<>();
+            """))
+
+            relation_methods.append(textwrap.dedent(f"""
+                public Set<{many}> get{field.capitalize()}() {{ return {field}; }}
+                public void set{field.capitalize()}(Set<{many}> s) {{ this.{field} = s; }}
+
+                public void add{many}({many} e) {{
+                    e.set{name}(this);
                 }}
 
-                public void set{field[0].upper()+field[1:]}(Collection<{many}> {field}) {{
-                    this.{field} = {field};
+                public void remove{many}({many} e) {{
+                    e.set{name}(null);
                 }}
-                """))
-            imports.add('import java.util.Collection;')
-        elif r['type'] == 'OneToMany' and r['many'] == name:
-            one = r['one']
-            # many side: ManyToOne
-            rel_snips.append('    @ManyToOne')
-            rel_snips.append(f'    @JoinColumn(name = "{to_snake(one)}Id")')
-            rel_snips.append(f'    private {one} {to_camel(one)};')
-            # setter with bidirectional maintenance
-            getters.append(textwrap.dedent(f"""
-                public {one} get{one}() {{
-                    return {to_camel(one)};
-                }}
+            """))
 
-                public void set{one}({one} {to_camel(one)}) {{
-                    if(this.{to_camel(one)} != null) {{
-                        try {{
-                            this.{to_camel(one)}.get{name}s().remove(this);
-                        }} catch (Exception ignored) {{}}
+        # MANY TO ONE owning
+        if r["type"] == "OneToMany" and r["many"] == name:
+            one = r["one"]
+            camel = one[0].lower() + one[1:]
+
+            relation_fields.append(textwrap.dedent(f"""
+                @JsonIgnore
+                @ManyToOne
+                @JoinColumn(name = "{one.lower()}_id")
+                private {one} {camel};
+            """))
+
+            relation_methods.append(textwrap.dedent(f"""
+                public {one} get{one}() {{ return {camel}; }}
+
+                public void set{one}({one} g) {{
+                    if (this.{camel} != null) {{
+                        this.{camel}.get{name}s().remove(this);
                     }}
-
-                    this.{to_camel(one)} = {to_camel(one)};
-
-                    if({to_camel(one)} != null) {{
-                        try {{
-                            {to_camel(one)}.get{name}s().add(this);
-                        }} catch (Exception ignored) {{}}
+                    this.{camel} = g;
+                    if (g != null) {{
+                        g.get{name}s().add(this);
                     }}
                 }}
-                """))
-        elif r['type'] == 'ManyToMany':
-            # make `a` owning side with JoinTable
-            a = r['a']; b = r['b']
+            """))
+
+        # MANY TO MANY
+        if r["type"] == "ManyToMany":
+            a, b = r["a"], r["b"]
+
             if a == name:
-                field = to_camel(b) + 's'
-                rel_snips.append('    @ManyToMany')
-                rel_snips.append(f'    @JoinTable(name = "{to_snake(a)}_{to_snake(b)}",')
-                rel_snips.append(f'        joinColumns = @JoinColumn(name = "{to_snake(a)}_id"),')
-                rel_snips.append(f'        inverseJoinColumns = @JoinColumn(name = "{to_snake(b)}_id"))')
-                rel_snips.append(f'    private Collection<{b}> {field};')
-                getters.append(textwrap.dedent(f"""
-                    public Collection<{b}> get{field[0].upper()+field[1:]}() {{
-                        return {field};
+                # owning side
+                other = b
+                field = other[0].lower() + other[1:] + "s"
+
+                relation_fields.append(textwrap.dedent(f"""
+                    @JsonIgnore
+                    @ManyToMany
+                    @JoinTable(
+                        name = "{name.lower()}_{other.lower()}",
+                        joinColumns = @JoinColumn(name = "{name.lower()}_id"),
+                        inverseJoinColumns = @JoinColumn(name = "{other.lower()}_id")
+                    )
+                    private Set<{other}> {field} = new HashSet<>();
+                """))
+
+                relation_methods.append(textwrap.dedent(f"""
+                    public Set<{other}> get{field.capitalize()}() {{ return {field}; }}
+                    public void set{field.capitalize()}(Set<{other}> s) {{ this.{field} = s; }}
+
+                    public void add{other}({other} e) {{
+                        e.get{name}s().add(this);
+                        {field}.add(e);
                     }}
 
-                    public void set{field[0].upper()+field[1:]}(Collection<{b}> {field}) {{
-                        this.{field} = {field};
+                    public void remove{other}({other} e) {{
+                        e.get{name}s().remove(this);
+                        {field}.remove(e);
                     }}
-                    """))
-                imports.add('import java.util.Collection;')
+                """))
+
             elif b == name:
-                field = to_camel(a) + 's'
-                rel_snips.append(f'    @ManyToMany(mappedBy = "{to_camel(b)}s")')
-                rel_snips.append(f'    private Collection<{a}> {field};')
-                getters.append(textwrap.dedent(f"""
-                    public Collection<{a}> get{field[0].upper()+field[1:]}() {{
-                        return {field};
-                    }}
+                # inverse side
+                other = a
+                field = other[0].lower() + other[1:] + "s"
 
-                    public void set{field[0].upper()+field[1:]}(Collection<{a}> {field}) {{
-                        this.{field} = {field};
-                    }}
-                    """))
-                imports.add('import java.util.Collection;')
-        elif r['type'] == 'OneToOne':
-            a = r['a']; b = r['b']
-            if name == a:
-                # mappedBy b
-                rel_snips.append(f'    @OneToOne(mappedBy = "{to_camel(a)}")')
-                rel_snips.append(f'    private {b} {to_camel(b)};')
-                getters.append(textwrap.dedent(f"""
-                    public {b} get{b}() {{
-                        return {to_camel(b)};
-                    }}
+                relation_fields.append(textwrap.dedent(f"""
+                    @JsonIgnore
+                    @ManyToMany(mappedBy = "{other[0].lower()+other[1:]}s")
+                    private Set<{other}> {field} = new HashSet<>();
+                """))
 
-                    public void set{b}({b} {to_camel(b)}) {{
-                        this.{to_camel(b)} = {to_camel(b)};
-                    }}
-                    """))
-            elif name == b:
-                rel_snips.append('    @OneToOne')
-                rel_snips.append(f'    @JoinColumn(name = "{to_snake(a)}_id")')
-                rel_snips.append(f'    private {a} {to_camel(a)};')
-                getters.append(textwrap.dedent(f"""
-                    public {a} get{a}() {{
-                        return {to_camel(a)};
-                    }}
+                relation_methods.append(textwrap.dedent(f"""
+                    public Set<{other}> get{field.capitalize()}() {{ return {field}; }}
+                    public void set{field.capitalize()}(Set<{other}> s) {{ this.{field} = s; }}
+                """))
 
-                    public void set{a}({a} {to_camel(a)}) {{
-                        this.{to_camel(a)} = {to_camel(a)};
-                    }}
-                    """))
+    final = tpl.format(
+        package = base_pkg,
+        ClassName = name,
+        fields = "\n".join(fields),
+        relationFields = "\n".join(relation_fields),
+        getters = "\n".join(getters),
+        relationMethods = "\n".join(relation_methods),
+    )
 
-    extra_imports = '\n'.join(sorted(imports))
-    fields_block = '\n'.join(fields)
-    rel_block = '\n'.join(rel_snips)
-    getters_block = '\n\n'.join(getters)
-
-    return tpl.format(pkg=pkg, table_name=to_snake(name), class_name=name, fields=fields_block, relations=rel_block, getters_setters=getters_block, extra_imports=extra_imports)
+    return final
 
 # ------------------ Main generator ------------------
 
