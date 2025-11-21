@@ -14,24 +14,28 @@ public class {entity}Repository {{
     @Inject
     EntityManager em;
 
-    @Transactional
-    public List<{entity}> findAll() {{
+    public List<{entity}> listAll() {{
         return em.createQuery("select e from {entity} e", {entity}.class).getResultList();
     }}
 
-    @Transactional
     public {entity} findById(Long id) {{
         return em.find({entity}.class, id);
     }}
 
     @Transactional
-    public {entity} save({entity} e) {{
+    public {entity} persist({entity} e) {{
+        em.persist(e);
+        return e;
+    }}
+
+    @Transactional
+    public {entity} update({entity} e) {{
         return em.merge(e);
     }}
 
     @Transactional
-    public void deleteById(Long id) {{
-        em.createQuery("delete from {entity} where id = :id")
+    public void delete(Long id) {{
+        em.createQuery("delete from {entity} e where e.id = :id")
             .setParameter("id", id)
             .executeUpdate();
     }}

@@ -7,17 +7,11 @@ import java.util.HashSet;
 
 @Entity
 public class {ClassName} {{
+    {fields}
 
-    @Id
-    @GeneratedValue
-    private Long id;
+    {relationFields}
 
-{fields}
+    {getters}
 
-{relationFields}
-
-{getters}
-
-{relationMethods}
-
+    {relationMethods}
 }}

@@ -24,7 +24,7 @@ public class {Entity}Resource {{
     @GET
     @Path("/{{id}}")
     public Response get(@PathParam("id") Long id) {{
-        {Entity} e = {entity}Repository.find(id);
+        {Entity} e = {entity}Repository.findById(id);
         if (e == null) throw new NotFoundException();
         return Response.ok(e).build();
     }}
