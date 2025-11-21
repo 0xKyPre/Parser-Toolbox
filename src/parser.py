@@ -4,21 +4,6 @@ PUML -> Quarkus generator
 
 Usage:
   python puml_to_quarkus_generator.py input.puml output_dir base.package
-
-This script will ensure a `templates/` folder exists next to the script with default
-templates (if missing it creates them). Then it parses the PlantUML file and
-renders Java files into the output directory.
-
-Templates are simple Python .format() templates. Java literal braces are escaped
-as `{{`/`}}` in the templates so .format() works correctly. Maven `${...}`
-occurrences are escaped as `$${{...}}` so pom generation works.
-
-Generated entity style:
- - package {pkg}.entities
- - uses `Collection<T>` for to-many relations
- - getters/setters as in the examples you provided
- - ManyToOne setter keeps bidirectional collections in sync when possible
-
 """
 
 from pathlib import Path
