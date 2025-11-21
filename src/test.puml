@@ -1,0 +1,29 @@
+@startuml
+
+!theme plain
+
+entity Plot {
+    *id : Long
+    --
+    width : Double
+    height : Double
+}
+
+entity Vegetable {
+    *id : Long
+    --
+    name : String
+    nutritional_value : Integer
+}
+
+entity Garden {
+    *id : Long
+    --
+    address : String
+}
+
+Plot }o--o{ Vegetable : has
+
+Plot }o--o| Garden : tended_by
+
+@enduml

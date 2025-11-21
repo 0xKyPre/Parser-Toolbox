@@ -1,166 +1,54 @@
 #!/usr/bin/env python3
 """
-PUML ERD (Crow's foot) -> Quarkus JPA project generator
+PUML -> Quarkus generator
 
 Usage:
-    python puml_to_quarkus.py input.puml output_dir base.package
+  python puml_to_quarkus_generator.py input.puml output_dir base.package
 
-What it does:
- - Parses a PlantUML ERD file containing `entity` blocks and relationship lines
-   using crow's-foot tokens (e.g. `||--o{`, `}o--||`, etc.).
- - Produces a Maven Quarkus project skeleton wired for PostgreSQL + Hibernate ORM
-   + REST (Resteasy Jackson) + JDBC, and generates:
-     * Entities (Jakarta Persistence annotations)
-     * Simple Repository classes (CDI + EntityManager)
-     * JAX-RS Resource classes (CRUD endpoints using Jackson)
-     * application.properties with placeholders for DB connection
-     * pom.xml (Quarkus dependencies)
+This script will ensure a `templates/` folder exists next to the script with default
+templates (if missing it creates them). Then it parses the PlantUML file and
+renders Java files into the output directory.
 
-Limitations / heuristics:
- - Expects entity blocks like:
-     entity Person {
-       id : long
-       name : String
-     }
-   or class-like declarations. Attribute lines should be `name : Type`.
- - Tries to detect `id` as primary key; otherwise first attribute becomes id.
- - Relationship parsing uses simple heuristics: token parts left/right containing
-   '|' means ONE, '{' or '}' or 'o' near braces means MANY. Many side becomes owning side.
- - Does not try to guess cascade/fetch optimally; generated code uses defaults.
+Templates are simple Python .format() templates. Java literal braces are escaped
+as `{{`/`}}` in the templates so .format() works correctly. Maven `${...}`
+occurrences are escaped as `$${{...}}` so pom generation works.
+
+Generated entity style:
+ - package {pkg}.entities
+ - uses `Collection<T>` for to-many relations
+ - getters/setters as in the examples you provided
+ - ManyToOne setter keeps bidirectional collections in sync when possible
 
 """
 
-import os
+from pathlib import Path
 import re
 import sys
-import shutil
-from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+import textwrap
+from typing import Dict, List
 
-# ----------------------------- Helpers ---------------------------------
+# ------------------ Utility functions ------------------
 
 def to_camel(s: str) -> str:
-    return s[0].lower() + s[1:] if s else s
+    if not s:
+        return s
+    return s[0].lower() + s[1:]
 
 
 def to_snake(s: str) -> str:
     return re.sub(r'(?<!^)(?=[A-Z])', '_', s).lower()
 
 
-def java_type(puml_type: str) -> str:
-    t = puml_type.strip()
-    mapping = {
-        'int': 'Integer', 'integer': 'Integer', 'long': 'Long', 'bigint': 'Long',
-        'string': 'String', 'varchar': 'String', 'text': 'String',
-        'boolean': 'Boolean', 'bool': 'Boolean',
-        'date': 'java.time.LocalDate', 'datetime': 'java.time.LocalDateTime',
-        'float': 'Float', 'double': 'Double', 'decimal': 'java.math.BigDecimal'
-    }
-    return mapping.get(t.lower(), t)
+def ensure_templates_dir(base: Path) -> Path:
+    tpl_dir = base / 'templates'
+    tpl_dir.mkdir(exist_ok=True)
+    return tpl_dir
 
+# ------------------ Default templates ------------------
 
-def mkdirp(path: Path):
-    path.mkdir(parents=True, exist_ok=True)
-
-# ----------------------------- Parsing ---------------------------------
-
-ENTITY_RE = re.compile(r"(?:entity|class)\s+(\w+)\s*\{([^}]*)\}", re.IGNORECASE | re.DOTALL)
-RELATION_RE = re.compile(r"^\s*(\w+)\s*([<>\|o{}]+-{2,}>|-{2,}[<>\|o{}]+)\s*(\w+)(?:\s*:\s*(.*))?$")
-
-
-def parse_entities(puml_text: str) -> Dict[str, Dict]:
-    entities: Dict[str, Dict] = {}
-    for m in ENTITY_RE.finditer(puml_text):
-        name = m.group(1).strip()
-        body = m.group(2).strip()
-        attrs = []
-        for line in body.splitlines():
-            line = line.strip()
-            if not line or line.startswith('//'):
-                continue
-            parts = [p.strip() for p in line.split(':', 1)]
-            if len(parts) == 2:
-                aname, atype = parts
-            else:
-                aname = parts[0]
-                atype = 'String'
-            aname = re.sub(r'^[+\-#*]+', '', aname).strip()
-            attrs.append((aname, atype))
-        entities[name] = {'name': name, 'attrs': attrs}
-    return entities
-
-
-def detect_multiplicity(token: str) -> str:
-    if '|' in token:
-        return 'ONE'
-    if '{' in token or '}' in token:
-        return 'MANY'
-    if 'o' in token and ('{' in token or '}' in token):
-        return 'MANY'
-    return 'UNKNOWN'
-
-
-def parse_relations(puml_text: str) -> List[Dict]:
-    relations = []
-    for raw in puml_text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith('//'):
-            continue
-        if '--' in line:
-            m = RELATION_RE.match(line)
-            if m:
-                left, token, right, label = m.group(1), m.group(2), m.group(3), m.group(4)
-            else:
-                parts = line.split('--')
-                if len(parts) < 2:
-                    continue
-                left_part = parts[0].strip()
-                right_part = '--'.join(parts[1:]).strip()
-                lm = re.match(r'^(\w+)\s*([\|\{\}o<>]*)$', left_part)
-                rm = re.match(r'^([\|\{\}o<>]*)\s*(\w+)(?:\s*:\s*(.*))?$', right_part)
-                if lm and rm:
-                    left = lm.group(1)
-                    token = (lm.group(2) or '') + '--' + (rm.group(1) or '')
-                    right = rm.group(2)
-                    label = None
-                else:
-                    sp = re.findall(r"(\w+)", line)
-                    if len(sp) >= 2:
-                        left, right = sp[0], sp[1]
-                        token = '--'
-                        label = None
-                    else:
-                        continue
-            left_token = token.split('--')[0]
-            right_token = token.split('--')[-1]
-            relations.append({'left': left, 'left_token': left_token, 'right': right, 'right_token': right_token, 'label': (label or '').strip()})
-    return relations
-
-# ----------------------- Map relations -> JPA ---------------------------
-
-def decide_relation_type(rel: Dict) -> Dict:
-    lt = detect_multiplicity(rel['left_token'])
-    rt = detect_multiplicity(rel['right_token'])
-    left = rel['left']
-    right = rel['right']
-    label = rel.get('label') or ''
-
-    if lt == 'ONE' and rt == 'MANY':
-        return {'type': 'OneToMany', 'one': left, 'many': right, 'label': label}
-    if lt == 'MANY' and rt == 'ONE':
-        return {'type': 'OneToMany', 'one': right, 'many': left, 'label': label}
-    if lt == 'ONE' and rt == 'ONE':
-        return {'type': 'OneToOne', 'a': left, 'b': right, 'label': label}
-    if lt == 'MANY' and rt == 'MANY':
-        return {'type': 'ManyToMany', 'a': left, 'b': right, 'label': label}
-    return {'type': 'OneToMany', 'one': left, 'many': right, 'label': label}
-
-# ----------------------- Code generation -------------------------------
-
-ENTITY_TEMPLATE = """package {pkg}.entities;
+DEFAULT_ENTITY_TPL = '''package {pkg}.entities;
 
 import jakarta.persistence.*;
-import java.util.*;
 {extra_imports}
 
 @Entity
@@ -173,20 +61,20 @@ public class {class_name} {{
 
 {getters_setters}
 
-}}
-"""
+}}'''
 
-REPOSITORY_TEMPLATE = """package {pkg}.repositories;
+DEFAULT_REPO_TPL = '''package {pkg}.repositories;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.TypedQuery;
 import {pkg}.entities.{entity};
-import java.util.*;
+import java.util.Collection;
 
 @ApplicationScoped
 public class {entity}Repository {{
+
     @Inject
     EntityManager em;
 
@@ -194,7 +82,7 @@ public class {entity}Repository {{
         return em.find({entity}.class, id);
     }}
 
-    public List<{entity}> listAll() {{
+    public Collection<{entity}> listAll() {{
         TypedQuery<{entity}> q = em.createQuery("from " + {entity}.class.getSimpleName(), {entity}.class);
         return q.getResultList();
     }}
@@ -212,17 +100,17 @@ public class {entity}Repository {{
         {entity} e = em.find({entity}.class, id);
         if (e != null) em.remove(e);
     }}
-}}
-"""
 
+}}'''
 
-RESOURCE_TEMPLATE = '''package {pkg}.resources;
+DEFAULT_RESOURCE_TPL = '''package {pkg}.resources;
 
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import jakarta.inject.Inject;
-import java.util.*;
+import java.util.Collection;
+
 import {pkg}.entities.{entity};
 import {pkg}.repositories.{entity}Repository;
 
@@ -235,7 +123,7 @@ public class {entity}Resource {{
     {entity}Repository repo;
 
     @GET
-    public List<{entity}> list() {{
+    public Collection<{entity}> list() {{
         return repo.listAll();
     }}
 
@@ -257,8 +145,7 @@ public class {entity}Resource {{
     @Path("/{{id}}")
     public {entity} update(@PathParam("id") Long id, {entity} e) {{
         e.setId(id);
-        {entity} updated = repo.update(e);
-        return updated;
+        return repo.update(e);
     }}
 
     @DELETE
@@ -266,11 +153,10 @@ public class {entity}Resource {{
     public void delete(@PathParam("id") Long id) {{
         repo.delete(id);
     }}
-}}
-'''
 
+}}'''
 
-POM_XML = '''<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+DEFAULT_POM_TPL = '''<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <groupId>{group}</groupId>
@@ -335,8 +221,7 @@ POM_XML = '''<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http:
 </project>
 '''
 
-
-APPLICATION_PROPS = '''# Quarkus datasource (PostgreSQL) - replace values
+DEFAULT_APP_TPL = '''# Quarkus datasource (PostgreSQL) - replace values
 quarkus.datasource.db-kind=postgresql
 quarkus.datasource.username=youruser
 quarkus.datasource.password=yourpassword
@@ -346,7 +231,7 @@ quarkus.datasource.jdbc.url=jdbc:postgresql://localhost:5432/yourdb
 quarkus.hibernate-orm.database.generation=update
 '''
 
-README = '''Generated Quarkus JPA project
+DEFAULT_README = '''Generated Quarkus JPA project (from PUML)
 
 How to build:
   mvn package
@@ -357,158 +242,364 @@ Run dev mode:
 Edit src/main/resources/application.properties to configure Postgres.
 '''
 
-# ----------------------- Putting it all together -----------------------
+# ------------------ Parser (simple, robust) ------------------
 
-def generate(project_root: Path, base_pkg: str, entities: Dict[str, Dict], relations: List[Dict]):
-    group = base_pkg
-    artifact = project_root.name
+ENTITY_RE = re.compile(r"(?:entity|class)\s+(\w+)\s*\{([^}]*)\}", re.IGNORECASE | re.DOTALL)
+RELATION_RE = re.compile(r"^\s*(\w+)\s*([<>\|o{}]+-{2,}>|-{2,}[<>\|o{}]+)\s*(\w+)(?:\s*:\s*(.*))?$")
 
+
+def parse_entities(text: str) -> Dict[str, Dict]:
+    entities = {}
+    for m in ENTITY_RE.finditer(text):
+        name = m.group(1).strip()
+        body = m.group(2).strip()
+        attrs = []
+        for line in body.splitlines():
+            line = line.strip()
+            if not line or line.startswith('//'):
+                continue
+            parts = [p.strip() for p in line.split(':', 1)]
+            if len(parts) == 2:
+                aname, atype = parts
+            else:
+                aname = parts[0]
+                atype = 'String'
+            aname = re.sub(r'^[+\-#*]+', '', aname).strip()
+            if not aname:
+                continue
+            attrs.append((aname, atype))
+        entities[name] = {'name': name, 'attrs': attrs}
+    return entities
+
+
+def parse_relations(text: str) -> List[Dict]:
+    relations = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith('//'):
+            continue
+        if '--' in line:
+            m = RELATION_RE.match(line)
+            if m:
+                left, token, right, label = m.group(1), m.group(2), m.group(3), m.group(4)
+            else:
+                parts = line.split('--')
+                if len(parts) < 2:
+                    continue
+                left_part = parts[0].strip()
+                right_part = '--'.join(parts[1:]).strip()
+                lm = re.match(r'^(\w+)\s*([\|\{\}o<>]*)$', left_part)
+                rm = re.match(r'^([\|\{\}o<>]*)\s*(\w+)(?:\s*:\s*(.*))?$', right_part)
+                if lm and rm:
+                    left = lm.group(1)
+                    token = (lm.group(2) or '') + '--' + (rm.group(1) or '')
+                    right = rm.group(2)
+                    label = None
+                else:
+                    sp = re.findall(r"(\w+)", line)
+                    if len(sp) >= 2:
+                        left, right = sp[0], sp[1]
+                        token = '--'
+                        label = None
+                    else:
+                        continue
+            left_token = token.split('--')[0]
+            right_token = token.split('--')[-1]
+            relations.append({'left': left, 'left_token': left_token, 'right': right, 'right_token': right_token, 'label': (label or '').strip()})
+    return relations
+
+
+def detect_mult(token: str) -> str:
+    if '|' in token:
+        return 'ONE'
+    if '{' in token or '}' in token:
+        return 'MANY'
+    if 'o' in token and ('{' in token or '}' in token):
+        return 'MANY'
+    return 'UNKNOWN'
+
+
+def decide_relation(rel: Dict) -> Dict:
+    lt = detect_mult(rel['left_token'])
+    rt = detect_mult(rel['right_token'])
+    left = rel['left']
+    right = rel['right']
+    if lt == 'ONE' and rt == 'MANY':
+        return {'type': 'OneToMany', 'one': left, 'many': right}
+    if lt == 'MANY' and rt == 'ONE':
+        return {'type': 'OneToMany', 'one': right, 'many': left}
+    if lt == 'ONE' and rt == 'ONE':
+        return {'type': 'OneToOne', 'a': left, 'b': right}
+    if lt == 'MANY' and rt == 'MANY':
+        return {'type': 'ManyToMany', 'a': left, 'b': right}
+    return {'type': 'OneToMany', 'one': left, 'many': right}
+
+# ------------------ Renderer ------------------
+
+def render_entity(pkg: str, name: str, meta: Dict, relations: List[Dict], tpl: str) -> str:
+    attrs = meta.get('attrs', [])
+    fields = []
+    getters = []
+    rel_snips = []
+    imports = set()
+
+    # find id
+    id_attr = None
+    for a in attrs:
+        if a[0].lower() == 'id':
+            id_attr = a
+            break
+    if id_attr is None and attrs:
+        id_attr = attrs[0]
+
+    # fields for attrs
+    for aname, atype in attrs:
+        fname = aname.strip()
+        if not fname:
+            continue
+        jtype = atype.strip()
+        # simple mapping
+        jmap = {
+            'long': 'Long', 'int': 'Integer', 'integer': 'Integer', 'string': 'String', 'decimal': 'java.math.BigDecimal',
+            'double': 'Double', 'float': 'Float', 'boolean': 'Boolean'
+        }
+        jtype = jmap.get(jtype.lower(), jtype)
+        if id_attr and fname == id_attr[0]:
+            fields.append('    @Id')
+            fields.append('    @GeneratedValue()')
+            fields.append(f'    private Long {fname};')
+            getters.append(textwrap.dedent(f"""
+                public Long getId() {{
+                    return {fname};
+                }}
+                
+                public void setId(Long id) {{
+                    this.{fname} = id;
+                }}
+                """))
+        else:
+            fields.append(f'    private {jtype} {fname};')
+            # getter/setter
+            cap = fname[0].upper() + fname[1:]
+            getters.append(textwrap.dedent(f"""
+                public {jtype} get{cap}() {{
+                    return {fname};
+                }}
+
+                public void set{cap}({jtype} {fname}) {{
+                    this.{fname} = {fname};
+                }}
+                """))
+
+    # handle relations
+    for r in relations:
+        if r['type'] == 'OneToMany' and r['one'] == name:
+            many = r['many']
+            field = to_camel(many) + 's'
+            rel_snips.append(f'    @OneToMany(mappedBy = "{to_camel(name)}")')
+            rel_snips.append(f'    private Collection<{many}> {field};')
+            # getter/setter
+            getters.append(textwrap.dedent(f"""
+                public Collection<{many}> get{field[0].upper()+field[1:]}() {{
+                    return {field};
+                }}
+
+                public void set{field[0].upper()+field[1:]}(Collection<{many}> {field}) {{
+                    this.{field} = {field};
+                }}
+                """))
+            imports.add('import java.util.Collection;')
+        elif r['type'] == 'OneToMany' and r['many'] == name:
+            one = r['one']
+            # many side: ManyToOne
+            rel_snips.append('    @ManyToOne')
+            rel_snips.append(f'    @JoinColumn(name = "{to_snake(one)}Id")')
+            rel_snips.append(f'    private {one} {to_camel(one)};')
+            # setter with bidirectional maintenance
+            getters.append(textwrap.dedent(f"""
+                public {one} get{one}() {{
+                    return {to_camel(one)};
+                }}
+
+                public void set{one}({one} {to_camel(one)}) {{
+                    if(this.{to_camel(one)} != null) {{
+                        try {{
+                            this.{to_camel(one)}.get{name}s().remove(this);
+                        }} catch (Exception ignored) {{}}
+                    }}
+
+                    this.{to_camel(one)} = {to_camel(one)};
+
+                    if({to_camel(one)} != null) {{
+                        try {{
+                            {to_camel(one)}.get{name}s().add(this);
+                        }} catch (Exception ignored) {{}}
+                    }}
+                }}
+                """))
+        elif r['type'] == 'ManyToMany':
+            # make `a` owning side with JoinTable
+            a = r['a']; b = r['b']
+            if a == name:
+                field = to_camel(b) + 's'
+                rel_snips.append('    @ManyToMany')
+                rel_snips.append(f'    @JoinTable(name = "{to_snake(a)}_{to_snake(b)}",')
+                rel_snips.append(f'        joinColumns = @JoinColumn(name = "{to_snake(a)}_id"),')
+                rel_snips.append(f'        inverseJoinColumns = @JoinColumn(name = "{to_snake(b)}_id"))')
+                rel_snips.append(f'    private Collection<{b}> {field};')
+                getters.append(textwrap.dedent(f"""
+                    public Collection<{b}> get{field[0].upper()+field[1:]}() {{
+                        return {field};
+                    }}
+
+                    public void set{field[0].upper()+field[1:]}(Collection<{b}> {field}) {{
+                        this.{field} = {field};
+                    }}
+                    """))
+                imports.add('import java.util.Collection;')
+            elif b == name:
+                field = to_camel(a) + 's'
+                rel_snips.append(f'    @ManyToMany(mappedBy = "{to_camel(b)}s")')
+                rel_snips.append(f'    private Collection<{a}> {field};')
+                getters.append(textwrap.dedent(f"""
+                    public Collection<{a}> get{field[0].upper()+field[1:]}() {{
+                        return {field};
+                    }}
+
+                    public void set{field[0].upper()+field[1:]}(Collection<{a}> {field}) {{
+                        this.{field} = {field};
+                    }}
+                    """))
+                imports.add('import java.util.Collection;')
+        elif r['type'] == 'OneToOne':
+            a = r['a']; b = r['b']
+            if name == a:
+                # mappedBy b
+                rel_snips.append(f'    @OneToOne(mappedBy = "{to_camel(a)}")')
+                rel_snips.append(f'    private {b} {to_camel(b)};')
+                getters.append(textwrap.dedent(f"""
+                    public {b} get{b}() {{
+                        return {to_camel(b)};
+                    }}
+
+                    public void set{b}({b} {to_camel(b)}) {{
+                        this.{to_camel(b)} = {to_camel(b)};
+                    }}
+                    """))
+            elif name == b:
+                rel_snips.append('    @OneToOne')
+                rel_snips.append(f'    @JoinColumn(name = "{to_snake(a)}_id")')
+                rel_snips.append(f'    private {a} {to_camel(a)};')
+                getters.append(textwrap.dedent(f"""
+                    public {a} get{a}() {{
+                        return {to_camel(a)};
+                    }}
+
+                    public void set{a}({a} {to_camel(a)}) {{
+                        this.{to_camel(a)} = {to_camel(a)};
+                    }}
+                    """))
+
+    extra_imports = '\n'.join(sorted(imports))
+    fields_block = '\n'.join(fields)
+    rel_block = '\n'.join(rel_snips)
+    getters_block = '\n\n'.join(getters)
+
+    return tpl.format(pkg=pkg, table_name=to_snake(name), class_name=name, fields=fields_block, relations=rel_block, getters_setters=getters_block, extra_imports=extra_imports)
+
+# ------------------ Main generator ------------------
+
+def load_template(tpl_dir: Path, name: str, default: str) -> str:
+    f = tpl_dir / name
+    if not f.exists():
+        f.write_text(default)
+    return f.read_text()
+
+
+def generate(project_root: Path, base_pkg: str, entities: Dict[str, Dict], relations_raw: List[Dict], tpl_dir: Path):
+    # prepare tree
     src_main = project_root / 'src' / 'main' / 'java'
     pkg_path = src_main / Path(*base_pkg.split('.'))
     entities_path = pkg_path / 'entities'
     repos_path = pkg_path / 'repositories'
     resources_path = pkg_path / 'resources'
+    (entities_path).mkdir(parents=True, exist_ok=True)
+    (repos_path).mkdir(parents=True, exist_ok=True)
+    (resources_path).mkdir(parents=True, exist_ok=True)
+    (project_root / 'src' / 'main' / 'resources').mkdir(parents=True, exist_ok=True)
 
-    mkdirp(entities_path)
-    mkdirp(repos_path)
-    mkdirp(resources_path)
-    mkdirp(project_root / 'src' / 'main' / 'resources')
+    # load templates
+    entity_tpl = load_template(tpl_dir, 'entity.tpl', DEFAULT_ENTITY_TPL)
+    repo_tpl = load_template(tpl_dir, 'repository.tpl', DEFAULT_REPO_TPL)
+    resource_tpl = load_template(tpl_dir, 'resource.tpl', DEFAULT_RESOURCE_TPL)
+    pom_tpl = load_template(tpl_dir, 'pom.tpl', DEFAULT_POM_TPL)
+    app_tpl = load_template(tpl_dir, 'application.properties.tpl', DEFAULT_APP_TPL)
+    readme_tpl = load_template(tpl_dir, 'readme.tpl', DEFAULT_README)
 
-    rel_objs = [decide_relation_type(r) for r in relations]
+    # decide relations
+    rel_objs = [decide_relation(r) for r in relations_raw]
 
-    entity_extra_imports = {name: set() for name in entities}
-    entity_rel_snippets: Dict[str, List[str]] = {name: [] for name in entities}
-
-    for r in rel_objs:
-        if r['type'] == 'OneToMany':
-            one = r['one']
-            many = r['many']
-            fk_field = to_camel(one)
-            snippet_many = f"    @ManyToOne\n    @JoinColumn(name=\"{to_snake(one)}_id\")\n    private {one} {fk_field};"
-            entity_rel_snippets[many].append(snippet_many)
-            entity_extra_imports[many].update({'jakarta.persistence.ManyToOne', 'jakarta.persistence.JoinColumn'})
-            col_field = to_camel(many) + 'List'
-            snippet_one = f"    @OneToMany(mappedBy=\"{fk_field}\")\n    private List<{many}> {col_field} = new ArrayList<>();"
-            entity_rel_snippets[one].append(snippet_one)
-            entity_extra_imports[one].update({'java.util.List', 'java.util.ArrayList', 'jakarta.persistence.OneToMany'})
-
-        elif r['type'] == 'OneToOne':
-            a = r['a']; b = r['b']
-            a_field = to_camel(b)
-            b_field = to_camel(a)
-            snippet_a = f"    @OneToOne(mappedBy=\"{b_field}\")\n    private {b} {a_field};"
-            snippet_b = f"    @OneToOne\n    @JoinColumn(name=\"{to_snake(a)}_id\")\n    private {a} {b_field};"
-            entity_rel_snippets[a].append(snippet_a)
-            entity_rel_snippets[b].append(snippet_b)
-            entity_extra_imports[a].update({'jakarta.persistence.OneToOne'})
-            entity_extra_imports[b].update({'jakarta.persistence.OneToOne', 'jakarta.persistence.JoinColumn'})
-
-        elif r['type'] == 'ManyToMany':
-            a = r['a']; b = r['b']
-            a_field = to_camel(b) + 'List'
-            b_field = to_camel(a) + 'List'
-            snippet_a = f"    @ManyToMany\n    @JoinTable(name=\"{to_snake(a)}_{to_snake(b)}\",\n        joinColumns=@JoinColumn(name=\"{to_snake(a)}_id\"),\n        inverseJoinColumns=@JoinColumn(name=\"{to_snake(b)}_id\"))\n    private List<{b}> {a_field} = new ArrayList<>();"
-            snippet_b = f"    @ManyToMany(mappedBy=\"{a_field}\")\n    private List<{a}> {b_field} = new ArrayList<>();"
-            entity_rel_snippets[a].append(snippet_a)
-            entity_rel_snippets[b].append(snippet_b)
-            entity_extra_imports[a].update({'jakarta.persistence.ManyToMany','jakarta.persistence.JoinTable','jakarta.persistence.JoinColumn','java.util.List','java.util.ArrayList'})
-            entity_extra_imports[b].update({'jakarta.persistence.ManyToMany','java.util.List','java.util.ArrayList'})
-
+    # render entities
     for ename, meta in entities.items():
-        attrs = meta['attrs']
-        id_attr = None
-        for a in attrs:
-            if a[0].lower() == 'id' or a[0].startswith('*'):
-                id_attr = a
-                break
-        if id_attr is None and attrs:
-            id_attr = attrs[0]
+        code = render_entity(base_pkg, ename, meta, rel_objs, entity_tpl)
+        (entities_path / f"{ename}.java").write_text(code)
 
-        fields_lines = []
-        getters_setters = []
-        extra_imports = set()
+    # repositories
+    for ename in entities:
+        r = repo_tpl.format(pkg=base_pkg, entity=ename)
+        (repos_path / f"{ename}Repository.java").write_text(r)
 
-        for aname, atype in attrs:
-            jtype = java_type(atype)
-            field_name = aname.strip()
-            if id_attr and field_name == id_attr[0]:
-                fields_lines.append('    @Id')
-                fields_lines.append('    @GeneratedValue(strategy = GenerationType.IDENTITY)')
-                extra_imports.update({'jakarta.persistence.Id','jakarta.persistence.GeneratedValue','jakarta.persistence.GenerationType'})
-            fields_lines.append(f'    private {jtype} {field_name};')
-            cap = field_name[0].upper() + field_name[1:]
+    # resources
+    for ename in entities:
+        entity_lower = to_camel(ename)
+        entities_lower = entity_lower + "s"
 
-            getters_setters.append(
-                f"    public {jtype} get{cap}() {{\n"
-                f"        return this.{field_name};\n"
-                f"    }}"
-            )
-
-            setters = (
-                f"    public void set{cap}({jtype} {field_name}) {{\n"
-                f"        this.{field_name} = {field_name};\n"
-                f"    }}"
-            )
-            
-            getters_setters.append(setters)
-            if '.' in jtype:
-                extra_imports.add(jtype)
-
-        rel_snips = '\n\n'.join(entity_rel_snippets.get(ename, []))
-        if id_attr:
-            pass
-
-        imports_block = '\n'.join([f'import {imp};' for imp in sorted(extra_imports)])
-        class_content = ENTITY_TEMPLATE.format(
-            pkg=base_pkg,
-            extra_imports=imports_block,
-            table_name=to_snake(ename),
-            class_name=ename,
-            fields='\n'.join(fields_lines),
-            relations=rel_snips,
-            getters_setters='\n\n'.join(getters_setters)
+        res = resource_tpl.format(
+            package=base_pkg,
+            Entity=ename,
+            entity=entity_lower,
+            entities=entities_lower
         )
-        fp = entities_path / f"{ename}.java"
-        fp.write_text(class_content)
 
-    for ename in entities:
-        repo_content = REPOSITORY_TEMPLATE.format(pkg=base_pkg, entity=ename)
-        (repos_path / f"{ename}Repository.java").write_text(repo_content)
+        (resources_path / f"{ename}Resource.java").write_text(res)
 
-    for ename in entities:
-        path = to_snake(ename)
-        res_content = RESOURCE_TEMPLATE.format(pkg=base_pkg, entity=ename, path=path)
-        (resources_path / f"{ename}Resource.java").write_text(res_content)
 
-    (project_root / 'pom.xml').write_text(POM_XML.format(group=group, artifact=artifact))
-    (project_root / 'src' / 'main' / 'resources' / 'application.properties').write_text(APPLICATION_PROPS)
-    (project_root / 'README.md').write_text(README)
+    # pom + app + readme
+    group = base_pkg
+    artifact = project_root.name
+    (project_root / 'pom.xml').write_text(
+        pom_tpl.format(
+            group_id=group,
+            artifact_id=artifact,
+            version="1.0.0-SNAPSHOT"
+        )
+    )
+    (project_root / 'src' / 'main' / 'resources' / 'application.properties').write_text(app_tpl)
+    (project_root / 'README.md').write_text(readme_tpl)
 
     print(f"Project generated at: {project_root}")
 
-
-# --------------------------- CLI --------------------------------------
+# ------------------ CLI ------------------
 
 def main():
     if len(sys.argv) < 4:
-        print("Usage: python parser.py input.puml output_dir base.package")
+        print('Usage: python puml_to_quarkus_generator.py input.puml output_dir base.package')
         sys.exit(1)
-    puml_file = Path(sys.argv[1])
-    out_dir = Path(sys.argv[2])
+    puml = Path(sys.argv[1])
+    out = Path(sys.argv[2])
     base_pkg = sys.argv[3]
 
-    if not puml_file.exists():
-        print("Input file not found:", puml_file)
+    if not puml.exists():
+        print('Input PUML not found:', puml)
         sys.exit(1)
 
-    if out_dir.exists():
-        print("Warning: output dir exists, contents may be overwritten")
+    tpl_dir = ensure_templates_dir(Path(__file__).parent)
 
-    text = puml_file.read_text(encoding='utf-8')
+    text = puml.read_text(encoding='utf-8')
     entities = parse_entities(text)
     relations_raw = parse_relations(text)
 
-    generate(out_dir, base_pkg, entities, relations_raw)
+    generate(out, base_pkg, entities, relations_raw, tpl_dir)
 
 if __name__ == '__main__':
     main()
