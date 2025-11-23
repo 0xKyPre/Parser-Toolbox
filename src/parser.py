@@ -153,17 +153,18 @@ DEFAULT_POM_TPL = '''
     <version>{version}</version>
 
     <properties>
-        <compiler-plugin.version>3.14.1</compiler-plugin.version>
-        <maven.compiler.release>21</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 
-        <quarkus.platform.artifact-id>quarkus-bom</quarkus.platform.artifact-id>
-        <quarkus.platform.group-id>io.quarkus.platform</quarkus.platform.group-id>
-        <quarkus.platform.version>3.29.3</quarkus.platform.version>
+        <maven.compiler.release>21</maven.compiler.release>
+        <compiler-plugin.version>3.14.1</compiler-plugin.version>
 
-        <skipITs>true</skipITs>
+        <quarkus.platform.group-id>io.quarkus.platform</quarkus.platform.group-id>
+        <quarkus.platform.artifact-id>quarkus-bom</quarkus.platform.artifact-id>
+        <quarkus.platform.version>3.29.4</quarkus.platform.version>
+
         <surefire-plugin.version>3.5.4</surefire-plugin.version>
+        <skipITs>true</skipITs>
     </properties>
 
     <dependencyManagement>
@@ -179,40 +180,51 @@ DEFAULT_POM_TPL = '''
     </dependencyManagement>
 
     <dependencies>
+
+        {lombok_dependency}
+
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-hibernate-orm</artifactId>
         </dependency>
-        <dependency>
-            <groupId>io.quarkus</groupId>
-            <artifactId>quarkus-rest-jackson</artifactId>
-        </dependency>
+
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-jdbc-postgresql</artifactId>
         </dependency>
+
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-rest-jackson</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-arc</artifactId>
         </dependency>
+
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-rest</artifactId>
         </dependency>
+
         <dependency>
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-junit5</artifactId>
             <scope>test</scope>
         </dependency>
+
         <dependency>
             <groupId>io.rest-assured</groupId>
             <artifactId>rest-assured</artifactId>
             <scope>test</scope>
         </dependency>
+
     </dependencies>
 
     <build>
         <plugins>
+
             <plugin>
                 <groupId>${{quarkus.platform.group-id}}</groupId>
                 <artifactId>quarkus-maven-plugin</artifactId>
@@ -224,7 +236,6 @@ DEFAULT_POM_TPL = '''
                             <goal>build</goal>
                             <goal>generate-code</goal>
                             <goal>generate-code-tests</goal>
-                            <goal>native-image-agent</goal>
                         </goals>
                     </execution>
                 </executions>
@@ -234,63 +245,17 @@ DEFAULT_POM_TPL = '''
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>${{compiler-plugin.version}}</version>
                 <configuration>
-                    <parameters>true</parameters>
-                </configuration>
-            </plugin>
+                    <release>21</release>
 
-            <plugin>
-                <artifactId>maven-surefire-plugin</artifactId>
-                <version>${{surefire-plugin.version}}</version>
-                <configuration>
-                    <argLine>--add-opens java.base/java.lang=ALL-UNNAMED</argLine>
-                    <systemPropertyVariables>
-                        <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
-                        <maven.home>${{maven.home}}</maven.home>
-                    </systemPropertyVariables>
-                </configuration>
-            </plugin>
+                    {lombok_processor}
 
-            <plugin>
-                <artifactId>maven-failsafe-plugin</artifactId>
-                <version>${{surefire-plugin.version}}</version>
-                <executions>
-                    <execution>
-                        <goals>
-                            <goal>integration-test</goal>
-                            <goal>verify</goal>
-                        </goals>
-                    </execution>
-                </executions>
-                <configuration>
-                    <argLine>--add-opens java.base/java.lang=ALL-UNNAMED</argLine>
-                    <systemPropertyVariables>
-                        <native.image.path>${{project.build.directory}}/${{project.build.finalName}}-runner</native.image.path>
-                        <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
-                        <maven.home>${{maven.home}}</maven.home>
-                    </systemPropertyVariables>
                 </configuration>
             </plugin>
 
         </plugins>
     </build>
 
-    <profiles>
-        <profile>
-            <id>native</id>
-            <activation>
-                <property>
-                    <name>native</name>
-                </property>
-            </activation>
-            <properties>
-                <quarkus.package.jar.enabled>false</quarkus.package.jar.enabled>
-                <skipITs>false</skipITs>
-                <quarkus.native.enabled>true</quarkus.native.enabled>
-            </properties>
-        </profile>
-    </profiles>
 </project>
-
 '''
 
 DEFAULT_APP_TPL = '''
@@ -568,7 +533,9 @@ def generate_import_sql(entities, relations):
     return "\n".join(sql_lines)
 
 def generate_pom_xml(project_root: Path, base_pkg: str, artifact: str, tpl: str, use_lombok: bool):
-    pom_content = tpl
+
+    lombok_dep = ""
+    lombok_ap = ""
 
     if use_lombok:
         lombok_dep = textwrap.dedent("""
@@ -578,7 +545,7 @@ def generate_pom_xml(project_root: Path, base_pkg: str, artifact: str, tpl: str,
                 <version>1.18.42</version>
                 <scope>provided</scope>
             </dependency>
-        """).strip()
+        """).rstrip()
 
         lombok_ap = textwrap.dedent("""
             <annotationProcessorPaths>
@@ -588,28 +555,17 @@ def generate_pom_xml(project_root: Path, base_pkg: str, artifact: str, tpl: str,
                     <version>1.18.42</version>
                 </path>
             </annotationProcessorPaths>
-        """).strip()
+        """).rstrip()
 
-        # Dependency ergänzen
-        pom_content = pom_content.replace(
-            "</dependencies>",
-            f"{lombok_dep}\n        </dependencies>"
-        )
-
-        # Annotation Processor ergänzen
-        pom_content = pom_content.replace(
-            "<configuration>",
-            "<configuration>\n                    " + lombok_ap
-        )
-
-    (project_root / "pom.xml").write_text(
-        pom_content.format(
-            group_id=base_pkg,
-            artifact_id=artifact,
-            version="1.0.0-SNAPSHOT"
-        )
+    pom = tpl.format(
+        group_id=base_pkg,
+        artifact_id=artifact,
+        version="1.0.0-SNAPSHOT",
+        lombok_dependency=lombok_dep,
+        lombok_processor=lombok_ap
     )
 
+    (project_root / "pom.xml").write_text(pom)
 
 def load_template(tpl_dir: Path, name: str, default: str) -> str:
     f = tpl_dir / name
