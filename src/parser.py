@@ -1,24 +1,6 @@
 #!/usr/bin/env python3
 """
 PUML -> Quarkus generator
-
-Usage:
-  python puml_to_quarkus_generator.py input.puml output_dir base.package
-
-This script will ensure a `templates/` folder exists next to the script with default
-templates (if missing it creates them). Then it parses the PlantUML file and
-renders Java files into the output directory.
-
-Templates are simple Python .format() templates. Java literal braces are escaped
-as `{{`/`}}` in the templates so .format() works correctly. Maven `${...}`
-occurrences are escaped as `$${{...}}` so pom generation works.
-
-Generated entity style:
- - package {pkg}.entities
- - uses `Collection<T>` for to-many relations
- - getters/setters as in the examples you provided
- - ManyToOne setter keeps bidirectional collections in sync when possible
-
 """
 
 from pathlib import Path
@@ -158,79 +140,164 @@ public class {entity}Resource {{
 
 }}'''
 
-DEFAULT_POM_TPL = '''<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
-  <modelVersion>4.0.0</modelVersion>
-  <groupId>{group}</groupId>
-  <artifactId>{artifact}</artifactId>
-  <version>1.0-SNAPSHOT</version>
-  <properties>
-    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <quarkus.platform.group-id>io.quarkus</quarkus.platform.group-id>
-    <quarkus.platform.artifact-id>quarkus-bom</quarkus.platform.artifact-id>
-    <quarkus.platform.version>3.3.2.Final</quarkus.platform.version>
-    <maven.compiler.source>17</maven.compiler.source>
-    <maven.compiler.target>17</maven.compiler.target>
-  </properties>
+DEFAULT_POM_TPL = '''
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
 
-  <dependencyManagement>
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>{group_id}</groupId>
+    <artifactId>{artifact_id}</artifactId>
+    <version>{version}</version>
+
+    <properties>
+        <compiler-plugin.version>3.14.1</compiler-plugin.version>
+        <maven.compiler.release>21</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+        <quarkus.platform.artifact-id>quarkus-bom</quarkus.platform.artifact-id>
+        <quarkus.platform.group-id>io.quarkus.platform</quarkus.platform.group-id>
+        <quarkus.platform.version>3.29.3</quarkus.platform.version>
+
+        <skipITs>true</skipITs>
+        <surefire-plugin.version>3.5.4</surefire-plugin.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>${{quarkus.platform.group-id}}</groupId>
+                <artifactId>${{quarkus.platform.artifact-id}}</artifactId>
+                <version>${{quarkus.platform.version}}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
     <dependencies>
-      <dependency>
-        <groupId>$${{quarkus.platform.group-id}}</groupId>
-        <artifactId>$${{quarkus.platform.artifact-id}}</artifactId>
-        <version>$${{quarkus.platform.version}}</version>
-        <type>pom</type>
-        <scope>import</scope>
-      </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-hibernate-orm</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-rest-jackson</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-jdbc-postgresql</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-arc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-rest</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-junit5</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.rest-assured</groupId>
+            <artifactId>rest-assured</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
-  </dependencyManagement>
 
-  <dependencies>
-    <dependency>
-      <groupId>io.quarkus</groupId>
-      <artifactId>quarkus-resteasy-jackson</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>io.quarkus</groupId>
-      <artifactId>quarkus-hibernate-orm</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>io.quarkus</groupId>
-      <artifactId>quarkus-jdbc-postgresql</artifactId>
-    </dependency>
-    <dependency>
-      <groupId>jakarta.annotation</groupId>
-      <artifactId>jakarta.annotation-api</artifactId>
-    </dependency>
-  </dependencies>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>${{quarkus.platform.group-id}}</groupId>
+                <artifactId>quarkus-maven-plugin</artifactId>
+                <version>${{quarkus.platform.version}}</version>
+                <extensions>true</extensions>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>build</goal>
+                            <goal>generate-code</goal>
+                            <goal>generate-code-tests</goal>
+                            <goal>native-image-agent</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
 
-  <build>
-    <plugins>
-      <plugin>
-        <groupId>io.quarkus</groupId>
-        <artifactId>quarkus-maven-plugin</artifactId>
-        <version>$${{quarkus.platform.version}}</version>
-        <executions>
-          <execution>
-            <goals>
-              <goal>build</goal>
-            </goals>
-          </execution>
-        </executions>
-      </plugin>
-    </plugins>
-  </build>
+            <plugin>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>${{compiler-plugin.version}}</version>
+                <configuration>
+                    <parameters>true</parameters>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>${{surefire-plugin.version}}</version>
+                <configuration>
+                    <argLine>--add-opens java.base/java.lang=ALL-UNNAMED</argLine>
+                    <systemPropertyVariables>
+                        <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
+                        <maven.home>${{maven.home}}</maven.home>
+                    </systemPropertyVariables>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <version>${{surefire-plugin.version}}</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <argLine>--add-opens java.base/java.lang=ALL-UNNAMED</argLine>
+                    <systemPropertyVariables>
+                        <native.image.path>${{project.build.directory}}/${{project.build.finalName}}-runner</native.image.path>
+                        <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
+                        <maven.home>${{maven.home}}</maven.home>
+                    </systemPropertyVariables>
+                </configuration>
+            </plugin>
+
+        </plugins>
+    </build>
+
+    <profiles>
+        <profile>
+            <id>native</id>
+            <activation>
+                <property>
+                    <name>native</name>
+                </property>
+            </activation>
+            <properties>
+                <quarkus.package.jar.enabled>false</quarkus.package.jar.enabled>
+                <skipITs>false</skipITs>
+                <quarkus.native.enabled>true</quarkus.native.enabled>
+            </properties>
+        </profile>
+    </profiles>
 </project>
+
 '''
 
-DEFAULT_APP_TPL = '''# Quarkus datasource (PostgreSQL) - replace values
+DEFAULT_APP_TPL = '''
+# replace values !!!!!!!
 quarkus.datasource.db-kind=postgresql
-quarkus.datasource.username=youruser
-quarkus.datasource.password=yourpassword
-quarkus.datasource.jdbc.url=jdbc:postgresql://localhost:5432/yourdb
-
-# Hibernate
-quarkus.hibernate-orm.database.generation=update
+quarkus.datasource.devservices.port=5320
+quarkus.http.port=8080
 '''
 
 DEFAULT_README = '''Generated Quarkus JPA project (from PUML)
@@ -338,22 +405,34 @@ def decide_relation(rel: Dict) -> Dict:
 
 # ------------------ Renderer ------------------
 
-def render_entity(base_pkg: str, name: str, meta: Dict, relations: List[Dict], tpl: str) -> str:
+def render_entity(base_pkg: str, name: str, meta: Dict, relations: List[Dict], tpl: str, use_lombok: bool = False) -> str:
     attrs = meta["attrs"]
     
     fields = []
-    getters = []
+    getters_setters = []
     relation_fields = []
-    relation_methods = []
+
+    extra_imports = []
+
+    # Lombok
+    lombok_annotations = ""
+    if use_lombok:
+        extra_imports.append("import lombok.Getter;")
+        extra_imports.append("import lombok.Setter;")
+        extra_imports.append("import lombok.Builder;")
+        extra_imports.append("import lombok.NoArgsConstructor;")
+        extra_imports.append("import lombok.AllArgsConstructor;")
+        lombok_annotations = "@Getter\n@Setter\n@Builder\n@NoArgsConstructor\n@AllArgsConstructor"
 
     # ------------------ normal fields ------------------
     for aname, atype in attrs:
         if aname.lower() == "id":
             fields.append("    @Id\n    @GeneratedValue\n    private Long id;")
-            getters.append(textwrap.dedent("""
-                public Long getId() { return id; }
-                public void setId(Long id) { this.id = id; }
-            """))
+            if not use_lombok:
+                getters_setters.append(textwrap.dedent("""
+                    public Long getId() { return id; }
+                    public void setId(Long id) { this.id = id; }
+                """))
             continue
 
         jmap = {
@@ -369,18 +448,18 @@ def render_entity(base_pkg: str, name: str, meta: Dict, relations: List[Dict], t
 
         fields.append(f"    private {jtype} {aname};")
 
-        cap = aname[0].upper() + aname[1:]
-        getters.append(textwrap.dedent(f"""
-            public {jtype} get{cap}() {{ return {aname}; }}
-            public void set{cap}({jtype} {aname}) {{ this.{aname} = {aname}; }}
-        """))
+        if not use_lombok:
+            cap = aname[0].upper() + aname[1:]
+            getters_setters.append(textwrap.dedent(f"""
+                public {jtype} get{cap}() {{ return {aname}; }}
+                public void set{cap}({jtype} {aname}) {{ this.{aname} = {aname}; }}
+            """))
 
     # ------------------ relations ------------------
     for r in relations:
-        # ONE TO MANY auf inverse Seite
         if r["type"] == "OneToMany" and r["one"] == name:
             many = r["many"]
-            field = many[0].lower() + many[1:] + "s"
+            field = to_camel(many) + "s"
             mapped_by = to_camel(name)
             relation_fields.append(textwrap.dedent(f"""
                 @JsonIgnore
@@ -388,7 +467,6 @@ def render_entity(base_pkg: str, name: str, meta: Dict, relations: List[Dict], t
                 private Set<{many}> {field} = new HashSet<>();
             """))
 
-        # MANY TO ONE owning
         if r["type"] == "OneToMany" and r["many"] == name:
             one = r["one"]
             camel = to_camel(one)
@@ -399,7 +477,6 @@ def render_entity(base_pkg: str, name: str, meta: Dict, relations: List[Dict], t
                 private {one} {camel};
             """))
 
-        # MANY TO MANY
         if r["type"] == "ManyToMany":
             a, b = r["a"], r["b"]
             if a == name:
@@ -426,15 +503,17 @@ def render_entity(base_pkg: str, name: str, meta: Dict, relations: List[Dict], t
                 """))
 
     final = tpl.format(
-        package = base_pkg,
-        ClassName = name,
-        fields = "\n".join(fields),
-        relationFields = "\n".join(relation_fields),
-        getters = "\n".join(getters),
-        relationMethods = "\n".join(relation_methods),
+        package=base_pkg,
+        ClassName=name,
+        fields="\n".join(fields + relation_fields),
+        getters_setters="\n".join(getters_setters),
+        extra_imports="\n".join(extra_imports),
+        lombok_annotations=lombok_annotations,
+        class_name_lower=name.lower()
     )
 
     return final
+
 
 # ------------------ Main generator ------------------
 
@@ -488,7 +567,48 @@ def generate_import_sql(entities, relations):
 
     return "\n".join(sql_lines)
 
+def generate_pom_xml(project_root: Path, base_pkg: str, artifact: str, tpl: str, use_lombok: bool):
+    pom_content = tpl
 
+    if use_lombok:
+        lombok_dep = textwrap.dedent("""
+            <dependency>
+                <groupId>org.projectlombok</groupId>
+                <artifactId>lombok</artifactId>
+                <version>1.18.42</version>
+                <scope>provided</scope>
+            </dependency>
+        """).strip()
+
+        lombok_ap = textwrap.dedent("""
+            <annotationProcessorPaths>
+                <path>
+                    <groupId>org.projectlombok</groupId>
+                    <artifactId>lombok</artifactId>
+                    <version>1.18.42</version>
+                </path>
+            </annotationProcessorPaths>
+        """).strip()
+
+        # Dependency ergänzen
+        pom_content = pom_content.replace(
+            "</dependencies>",
+            f"{lombok_dep}\n        </dependencies>"
+        )
+
+        # Annotation Processor ergänzen
+        pom_content = pom_content.replace(
+            "<configuration>",
+            "<configuration>\n                    " + lombok_ap
+        )
+
+    (project_root / "pom.xml").write_text(
+        pom_content.format(
+            group_id=base_pkg,
+            artifact_id=artifact,
+            version="1.0.0-SNAPSHOT"
+        )
+    )
 
 
 def load_template(tpl_dir: Path, name: str, default: str) -> str:
@@ -498,7 +618,7 @@ def load_template(tpl_dir: Path, name: str, default: str) -> str:
     return f.read_text()
 
 
-def generate(project_root: Path, base_pkg: str, entities: Dict[str, Dict], relations_raw: List[Dict], tpl_dir: Path):
+def generate(project_root: Path, base_pkg: str, entities: Dict[str, Dict], relations_raw: List[Dict], tpl_dir: Path, use_lombok:bool):
     # prepare tree
     src_main = project_root / 'src' / 'main' / 'java'
     pkg_path = src_main / Path(*base_pkg.split('.'))
@@ -523,7 +643,7 @@ def generate(project_root: Path, base_pkg: str, entities: Dict[str, Dict], relat
 
     # render entities
     for ename, meta in entities.items():
-        code = render_entity(base_pkg, ename, meta, rel_objs, entity_tpl)
+        code = render_entity(base_pkg, ename, meta, rel_objs, entity_tpl, use_lombok=use_lombok)
         (entities_path / f"{ename}.java").write_text(code)
 
     # repositories
@@ -551,13 +671,15 @@ def generate(project_root: Path, base_pkg: str, entities: Dict[str, Dict], relat
     # pom + app + readme
     group = base_pkg
     artifact = project_root.name
-    (project_root / 'pom.xml').write_text(
-        pom_tpl.format(
-            group_id=group,
-            artifact_id=artifact,
-            version="1.0.0-SNAPSHOT"
-        )
+    
+    generate_pom_xml(
+        project_root=project_root,
+        base_pkg=group,
+        artifact=artifact,
+        tpl=pom_tpl,
+        use_lombok=use_lombok
     )
+
     (project_root / 'src' / 'main' / 'resources' / 'application.properties').write_text(app_tpl)
     (project_root / 'src' / 'main' / 'resources' / 'import.sql').write_text(generate_import_sql(entities=entities, relations=rel_objs))
     (project_root / 'README.md').write_text(readme_tpl)
@@ -567,12 +689,25 @@ def generate(project_root: Path, base_pkg: str, entities: Dict[str, Dict], relat
 # ------------------ CLI ------------------
 
 def main():
-    if len(sys.argv) < 4:
-        print('Usage: python puml_to_quarkus_generator.py input.puml output_dir base.package')
+    # Expected:
+    # python puml_to_quarkus_generator.py input.puml output_dir base.package [--lombok]
+
+    if len(sys.argv) < 4 or len(sys.argv) > 5:
+        print('Usage: python puml_to_quarkus_generator.py input.puml output_dir base.package [--lombok]')
         sys.exit(1)
+
     puml = Path(sys.argv[1])
     out = Path(sys.argv[2])
     base_pkg = sys.argv[3]
+
+    use_lombok = False
+    if len(sys.argv) == 5:
+        if sys.argv[4] == "--lombok":
+            use_lombok = True
+        else:
+            print("Error: Unknown option:", sys.argv[4])
+            print('Usage: python puml_to_quarkus_generator.py input.puml output_dir base.package [--lombok]')
+            sys.exit(1)
 
     if not puml.exists():
         print('Input PUML not found:', puml)
@@ -584,7 +719,14 @@ def main():
     entities = parse_entities(text)
     relations_raw = parse_relations(text)
 
-    generate(out, base_pkg, entities, relations_raw, tpl_dir)
+    generate(out, base_pkg, entities, relations_raw, tpl_dir, use_lombok=use_lombok)
+
+    if use_lombok:
+        print("Project generated with Lombok support")
+    else:
+        print("Project generated without Lombok (classic getters/setters)")
+
 
 if __name__ == '__main__':
     main()
+
