@@ -10,7 +10,7 @@ A flexible tool for parsing PlantUML class diagrams and automatically generating
 
 Syntax:
 ```
-python parser.py <input.puml> <output_directory> <base_java_package>
+python parser.py <input.puml> <output_directory> <base_java_package> [--lombok]
 ```
 
 For the test an example:
@@ -28,6 +28,9 @@ at.ac.htlleonding.wmctest5.entities
 at.ac.htlleonding.wmctest5.repositories
 at.ac.htlleonding.wmctest5.resources
 ```
+
+## lombok
+with the flag `--lombok` you can generate a project with lombok. BUT you need sdk 21 for lombok probably or need to upgrade.  else you can use the sdk 25 without lombok without any problems too.
 
 ## project structure:
 ```cmd
