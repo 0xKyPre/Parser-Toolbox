@@ -30,31 +30,37 @@ def ensure_templates_dir(base: Path) -> Path:
 
 # ------------------ Default templates ------------------
 
-DEFAULT_ENTITY_TPL = '''package {pkg}.entities;
+DEFAULT_ENTITY_TPL = '''
+package {package}.entities;
 
 import jakarta.persistence.*;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import java.util.Set;
+import java.util.HashSet;
 {extra_imports}
 
+{lombok_annotations}
 @Entity
-@Table(name = "{table_name}")
-public class {class_name} {{
+@Table(name = "{class_name_lower}")
+public class {ClassName} {{
 
-{fields}
+    {fields}
 
-{relations}
+    {getters_setters}
 
-{getters_setters}
+}}
+'''
 
-}}'''
-
-DEFAULT_REPO_TPL = '''package {pkg}.repositories;
+DEFAULT_REPO_TPL = '''
+package {pkg}.repositories;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
-import jakarta.persistence.TypedQuery;
+import jakarta.transaction.Transactional;
 import {pkg}.entities.{entity};
-import java.util.Collection;
+
+import java.util.List;
 
 @ApplicationScoped
 public class {entity}Repository {{
@@ -62,83 +68,88 @@ public class {entity}Repository {{
     @Inject
     EntityManager em;
 
-    public {entity} find(Long id) {{
+    public List<{entity}> listAll() {{
+        return em.createQuery("select e from {entity} e", {entity}.class).getResultList();
+    }}
+
+    public {entity} findById(Long id) {{
         return em.find({entity}.class, id);
     }}
 
-    public Collection<{entity}> listAll() {{
-        TypedQuery<{entity}> q = em.createQuery("from " + {entity}.class.getSimpleName(), {entity}.class);
-        return q.getResultList();
-    }}
-
+    @Transactional
     public {entity} persist({entity} e) {{
         em.persist(e);
         return e;
     }}
 
+    @Transactional
     public {entity} update({entity} e) {{
         return em.merge(e);
     }}
 
+    @Transactional
     public void delete(Long id) {{
-        {entity} e = em.find({entity}.class, id);
-        if (e != null) em.remove(e);
+        em.createQuery("delete from {entity} e where e.id = :id")
+            .setParameter("id", id)
+            .executeUpdate();
     }}
+}}
+'''
 
-}}'''
+DEFAULT_RESOURCE_TPL = '''
+package {package}.resources;
 
-DEFAULT_RESOURCE_TPL = '''package {pkg}.resources;
-
+import jakarta.inject.Inject;
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
-import jakarta.inject.Inject;
-import java.util.Collection;
 
-import {pkg}.entities.{entity};
-import {pkg}.repositories.{entity}Repository;
+import {package}.entities.{Entity};
+import {package}.repositories.{Entity}Repository;
 
-@Path("/{path}")
+@Path("/{entities}")
 @Produces(MediaType.APPLICATION_JSON)
 @Consumes(MediaType.APPLICATION_JSON)
-public class {entity}Resource {{
+public class {Entity}Resource {{
 
     @Inject
-    {entity}Repository repo;
+    {Entity}Repository {entity}Repository;
 
     @GET
-    public Collection<{entity}> list() {{
-        return repo.listAll();
+    public Response list() {{
+        return Response.ok({entity}Repository.listAll()).build();
     }}
 
     @GET
     @Path("/{{id}}")
-    public {entity} get(@PathParam("id") Long id) {{
-        {entity} e = repo.find(id);
+    public Response get(@PathParam("id") Long id) {{
+        {Entity} e = {entity}Repository.findById(id);
         if (e == null) throw new NotFoundException();
-        return e;
+        return Response.ok(e).build();
     }}
 
     @POST
-    public Response create({entity} e) {{
-        repo.persist(e);
+    public Response create({Entity} e) {{
+        {entity}Repository.persist(e);
         return Response.status(Response.Status.CREATED).entity(e).build();
     }}
 
     @PUT
     @Path("/{{id}}")
-    public {entity} update(@PathParam("id") Long id, {entity} e) {{
+    public Response update(@PathParam("id") Long id, {Entity} e) {{
         e.setId(id);
-        return repo.update(e);
+        return Response.ok({entity}Repository.update(e)).build();
     }}
 
     @DELETE
     @Path("/{{id}}")
-    public void delete(@PathParam("id") Long id) {{
-        repo.delete(id);
+    public Response delete(@PathParam("id") Long id) {{
+        {entity}Repository.delete(id);
+        return Response.ok().build();
     }}
+}}
 
-}}'''
+'''
 
 DEFAULT_POM_TPL = '''
 <?xml version="1.0" encoding="UTF-8"?>
@@ -265,7 +276,8 @@ quarkus.datasource.devservices.port=5320
 quarkus.http.port=8080
 '''
 
-DEFAULT_README = '''Generated Quarkus JPA project (from PUML)
+DEFAULT_README = '''
+Generated Quarkus JPA project (from PUML)
 
 How to build:
   mvn package
